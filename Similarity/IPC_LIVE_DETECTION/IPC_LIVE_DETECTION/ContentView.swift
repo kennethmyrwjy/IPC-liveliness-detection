@@ -173,11 +173,11 @@ struct VerificationResultView: View {
             case .success(let response):
                 Image(systemName: "checkmark.shield.fill").font(.system(size: 50)).foregroundStyle(.green)
                 Text("VERIFICATION PASSED").font(.title2).bold().foregroundStyle(.green)
-                Text(String(format: "Similarity Score: %.2f%%", response.similarity_score * 100)).font(.subheadline)
+//                Text(String(format: "Similarity Score: %.2f%%", response.similarity_score * 100)).font(.subheadline)
             case .failure(let response):
                 Image(systemName: "xmark.shield.fill").font(.system(size: 50)).foregroundStyle(.red)
                 Text("VERIFICATION FAILED").font(.title2).bold().foregroundStyle(.red)
-                Text(String(format: "Similarity Score: %.2f%%", response.similarity_score * 100)).font(.subheadline)
+//                Text(String(format: "Similarity Score: %.2f%%", response.similarity_score * 100)).font(.subheadline)
             case .error(let message):
                 Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 50)).foregroundStyle(.orange)
                 Text("Error").font(.title2).bold()
