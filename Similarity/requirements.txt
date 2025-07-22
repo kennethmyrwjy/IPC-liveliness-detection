@@ -1,0 +1,9 @@
+flask
+gunicorn
+insightface
+onnxruntime
+opencv-python
+numpy
+matplotlib
+scikit-image
+scipy
