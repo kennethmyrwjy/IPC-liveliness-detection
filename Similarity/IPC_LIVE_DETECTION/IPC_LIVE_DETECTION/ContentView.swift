@@ -8,6 +8,7 @@ import SwiftUI
 import UIKit
 import CoreML
 import Vision
+import AVFoundation
 
 // MARK: - Data Models
 
@@ -101,16 +102,19 @@ class VerificationViewModel: ObservableObject {
             return
         }
         
-        guard let ktp = ktpImage, let selfie = selfieImage else { return }
-        status = .processing
-        Task {
-            do {
-                let response = try await service.verify(ktpImage: ktp, selfieImage: selfie)
-                status = response.verified ? .success(response: response)
-                                           : .failure(response: response)
-            } catch {
-                status = .error(message: error.localizedDescription)
+        if let ktp = ktpImage, let selfie = selfieImage {
+            status = .processing
+            Task {
+                do {
+                    let response = try await service.verify(ktpImage: ktp, selfieImage: selfie)
+                    status = response.verified ? .success(response: response)
+                                               : .failure(response: response)
+                } catch {
+                    status = .error(message: error.localizedDescription)
+                }
             }
+        } else {
+            status = .error(message: "Missing images for verification.")
         }
     }
     
@@ -226,7 +230,14 @@ struct ContentView: View {
 //                        isShowingSelfiePicker = true
 //                    }
 //                }
-                
+                if let captureSession = cameraCapture?.session {
+                    CameraPreview(session: captureSession)
+                        .frame(width: 300, height: 300)
+                } else {
+                    Text("Failed to start camera")
+                        .foregroundColor(.red)
+                }
+
                 Button("Start Selfie Capture") {
                     startSelfieCapture()
                 }
@@ -260,16 +271,18 @@ struct ContentView: View {
     }
     
     private func startSelfieCapture() {
-        cameraCapture = CameraCapture()
-        cameraCapture.onDesiredOutputDetected = { capturedImage in
-            // Once the desired result is detected, set the captured image as the selfie
-            self.viewModel.selfieImage = capturedImage
-            // Proceed to the verification process
-            self.viewModel.performVerification()
+        if cameraCapture == nil {
+            cameraCapture = CameraCapture()
+            cameraCapture?.onDesiredOutputDetected = { capturedImage in
+                // Once the desired result is detected, set the captured image as the selfie
+                self.viewModel.selfieImage = capturedImage
+                // Proceed to the verification process
+                self.viewModel.performVerification()
+            }
         }
-        
+
         // Start the live camera feed
-        cameraCapture.startCapture()
+        cameraCapture?.startCapture()
     }
     
     private func stopSelfieCapture() {
@@ -389,6 +402,25 @@ struct ImagePicker: UIViewControllerRepresentable {
             parent.presentationMode.wrappedValue.dismiss()
         }
     }
+}
+
+struct CameraPreview: UIViewRepresentable {
+    var session: AVCaptureSession
+    func makeUIView(context: Context) -> UIView {
+            let view = UIView()
+            
+            // Create the preview layer and add it to the view's layer
+            let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+            previewLayer.videoGravity = .resizeAspectFill
+            previewLayer.frame = view.bounds
+            view.layer.addSublayer(previewLayer)
+
+            return view
+        }
+
+        func updateUIView(_ uiView: UIView, context: Context) {
+            // Update the view when needed (e.g., when the frame changes)
+        }
 }
 
 // MARK: - Selfie Image Picker

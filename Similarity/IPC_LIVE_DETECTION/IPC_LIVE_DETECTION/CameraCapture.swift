@@ -3,8 +3,8 @@ import CoreML
 import Vision
 import SwiftUI
 
-class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private var session: AVCaptureSession!
+public class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    var session: AVCaptureSession!
     private var previewLayer: AVCaptureVideoPreviewLayer!
     
     private var mlModel: VNCoreMLModel!
@@ -12,6 +12,7 @@ class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private var visionHandler: VNImageRequestHandler!
     
     private var desiredResult: String = "plain" // Desired model output to trigger next step
+    private let photoOutput = AVCapturePhotoOutput() // Reference to the photo output
 
     // Completion handler to notify when the desired output is detected
     var onDesiredOutputDetected: ((UIImage) -> Void)?
@@ -46,6 +47,11 @@ class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
+        }
+        
+        // Add photo output to session
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
         }
         
         // Set up the preview layer to show camera feed on the screen
@@ -94,18 +100,17 @@ class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     
     // Capture the image when desired output is detected
     private func captureImage() {
-        guard let connection = session.connections.first else { return }
-        connection.videoOrientation = .portrait
-        
-        // Capture image from the camera feed (using a still image)
-        let output = AVCapturePhotoOutput()
+        // Use the already existing photoOutput (not creating a new one)
         let settings = AVCapturePhotoSettings()
         
-        output.capturePhoto(with: settings, delegate: self)
+        // Capture photo with settings
+        photoOutput.capturePhoto(with: settings, delegate: self)
     }
     
     // MARK: - Video Processing
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+    public func captureOutput(_ output: AVCaptureOutput,
+                   didOutput sampleBuffer: CMSampleBuffer,
+                   from connection: AVCaptureConnection) {
         // Convert the sample buffer to a CIImage
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
@@ -121,14 +126,20 @@ class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 }
 
 extension CameraCapture: AVCapturePhotoCaptureDelegate {
-    func capture(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+    public func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        if let error = error {
+            print("Error processing photo: \(error.localizedDescription)")
+            return
+        }
+
         guard let data = photo.fileDataRepresentation(),
               let image = UIImage(data: data) else {
             print("Failed to capture image.")
             return
         }
-        
+
         // Once the image is captured, notify the view controller
         onDesiredOutputDetected?(image)
     }
 }
+
