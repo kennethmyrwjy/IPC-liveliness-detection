@@ -16,6 +16,30 @@ struct ResultView: View {
                 Text("Verification Results")
                     .font(.largeTitle).fontWeight(.bold)
 
+                // NEW: Display Pre-Liveness Verification Status
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Initial Security Check")
+                        .font(.title2).bold()
+                    Divider()
+                    switch viewModel.preLivenessVerificationStatus {
+                    case .pending:
+                        Text("Not performed.").foregroundStyle(.secondary)
+                    case .processing:
+                        ProgressView("Processing...")
+                    case .success:
+                        ResultRow(label: "Status", value: "PASSED", icon: "checkmark.shield.fill", color: .green)
+                    case .failure(let message):
+                        ResultRow(label: "Status", value: "FAILED", icon: "xmark.shield.fill", color: .red)
+                        Text(message).font(.subheadline)
+                    case .error(let message):
+                        ResultRow(label: "Status", value: "ERROR", icon: "exclamationmark.triangle.fill", color: .orange)
+                        Text(message).font(.subheadline)
+                    }
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
+
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Liveness Check")
                         .font(.title2).bold()

@@ -45,18 +45,17 @@ struct LivenessCheckView: View {
                 .clipShape(Circle())
                 .overlay(Circle().stroke(viewModel.livenessStatus == .inProgress ? Color.yellow : Color.white, lineWidth: 4))
 
-                // Instruction Text
+                // Instruction Text - Updated based on preLivenessVerificationStatus
                 VStack {
                     Text(viewModel.livenessInstruction)
                         .font(.headline)
-                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : .orange)
+                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : (viewModel.preLivenessVerificationStatus == .processing ? .white : .orange)) // Corrected
                         .multilineTextAlignment(.center)
                         .animation(.easeInOut, value: viewModel.livenessInstruction)
                 }
                 .frame(minHeight: 60)
 
-                // --- NEW WARNING VIEW ---
-                // This view appears only when there's an obstruction but the user can still proceed.
+                // --- NEW WARNING/ERROR VIEWS ---
                 if viewModel.isFaceDetected && viewModel.obstructionResult != "plain" {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -69,40 +68,72 @@ struct LivenessCheckView: View {
                     .background(Color.yellow.opacity(0.3))
                     .cornerRadius(8)
                     .transition(.opacity.animation(.easeInOut))
-                } else {
+                } else if case .failure(let message) = viewModel.preLivenessVerificationStatus {
+                     HStack {
+                        Image(systemName: "xmark.octagon.fill")
+                            .foregroundColor(.red)
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundColor(.white)
+                    }
+                    .padding(8)
+                    .background(Color.red.opacity(0.3))
+                    .cornerRadius(8)
+                    .transition(.opacity.animation(.easeInOut))
+                } else if case .error(let message) = viewModel.preLivenessVerificationStatus {
+                     HStack {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundColor(.orange)
+                        Text("Error: \(message)")
+                            .font(.footnote)
+                            .foregroundColor(.white)
+                    }
+                    .padding(8)
+                    .background(Color.orange.opacity(0.3))
+                    .cornerRadius(8)
+                    .transition(.opacity.animation(.easeInOut))
+                }
+                else {
                     // Add a spacer to prevent the button from jumping up and down
                     Spacer().frame(height: 38)
                 }
                 
                 Button(action: {
-                    prepareAndStartLivenessCheck()
+                    // Call the new pre-liveness verification function in ViewModel
+                    viewModel.performPreLivenessVerification()
                 }) {
-                    Text(viewModel.livenessStatus == .inProgress ? "Checking..." : "Start Liveness Check")
+                    Text(viewModel.preLivenessVerificationStatus == .processing ? "Checking..." : (viewModel.livenessStatus == .inProgress ? "Checking..." : "Start Liveness Check"))
                         .font(.title2).fontWeight(.bold).foregroundColor(.white).padding()
                         .frame(maxWidth: .infinity)
                         .background(viewModel.isReadyForLivenessCheck ? Color.blue : Color.gray)
                         .cornerRadius(15).shadow(radius: 5)
                 }
-                // The button is now enabled as long as a face is detected.
-                .disabled(!viewModel.isReadyForLivenessCheck || viewModel.livenessStatus == .inProgress)
-
+                // The button is now disabled if not ready, or if initial check or liveness is in progress.
+                .disabled(!viewModel.isReadyForLivenessCheck || viewModel.preLivenessVerificationStatus == .processing || viewModel.livenessStatus == .inProgress) // Reverted back to ==
+                
                 Spacer()
             }
             .padding()
         }
         .background(Color.black.edgesIgnoringSafeArea(.all))
-        .navigationBarBackButtonHidden(viewModel.livenessStatus == .inProgress)
+        // Hide back button during processing states
+        .navigationBarBackButtonHidden(viewModel.livenessStatus == .inProgress || viewModel.preLivenessVerificationStatus == .processing) // Reverted back to ==
         .onAppear {
             originalBrightness = UIScreen.main.brightness
+            // If the viewModel indicates a successful pre-liveness check and pending liveness,
+            // it means we navigated back and forth, so we should re-start the color sequence
+            // if we were already past the pre-liveness check.
+            if viewModel.preLivenessVerificationStatus == .success && viewModel.livenessStatus == .pending { // Reverted back to ==
+                startColorFlashSequence()
+            }
         }
         .onDisappear {
             UIScreen.main.brightness = originalBrightness
         }
     }
     
-    // ... rest of the file is unchanged ...
-    private func prepareAndStartLivenessCheck() {
-        viewModel.startLivenessCheck()
+    // This function is now called by the ViewModel when it's time to start the actual color sequence
+    private func startColorFlashSequence() {
         sessionResults.removeAll()
         currentStep = 0
         UIScreen.main.brightness = 1.0
@@ -159,6 +190,7 @@ struct LivenessCheckView: View {
         UIScreen.main.brightness = originalBrightness
         let report = "Liveness Failed:\n\(reason)"
         viewModel.livenessCheckCompleted(wasSuccessful: false, report: report, baselineImage: nil)
+        viewModel.preLivenessVerificationStatus = .pending // Reset pre-liveness status to allow retry from the start
     }
     
     private func endLivenessCheck() {

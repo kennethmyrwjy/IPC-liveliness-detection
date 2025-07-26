@@ -9,6 +9,8 @@ import SwiftUI
 
 protocol VerificationServiceProtocol {
     func verify(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse
+    // Add new method for spoof/pre-liveness verification
+    func performPreLivenessCheck(ktpImage: UIImage) async throws -> SpoofDetectionResponse // Example
 }
 
 struct VerificationResponse: Decodable {
@@ -16,6 +18,11 @@ struct VerificationResponse: Decodable {
     let similarity_score: Double
     let deep_feature_similarity: Double
     let threshold: Double
+}
+
+struct SpoofDetectionResponse: Decodable {
+    let isSpoof: Bool
+    let confidence: Double?
 }
 
 struct APIErrorResponse: Decodable {
@@ -35,6 +42,15 @@ enum LivenessStatus {
     case inProgress
     case success
     case failure
+}
+
+// MODIFIED: Make PreLivenessVerificationStatus Equatable
+enum PreLivenessVerificationStatus: Equatable { // <<<--- ADDED : Equatable
+    case pending
+    case processing
+    case success
+    case failure(message: String)
+    case error(message: String)
 }
 
 struct VerificationResultView: View {

@@ -22,15 +22,24 @@ class EKYCViewModel: ObservableObject {
     @Published var livenessReport: String = ""
 
     @Published var verificationStatus: APIVerificationStatus = .pending
+    // NEW: Status for the pre-liveness API call (e.g., spoof detection)
+    @Published var preLivenessVerificationStatus: PreLivenessVerificationStatus = .pending
 
     // --- MODIFIED ---
-    // The check is now ready as long as a face is in the frame.
-    // The UI will handle showing a warning for obstructions.
+    // The check is now ready as long as a face is in the frame AND pre-liveness check is not processing.
     var isReadyForLivenessCheck: Bool {
-        isFaceDetected
+        // Corrected comparison for enum with associated values
+        if case .processing = preLivenessVerificationStatus {
+            return false // If processing, not ready for liveness check
+        }
+        return isFaceDetected
     }
 
     var livenessInstruction: String {
+        // Corrected comparison for enum with associated values
+        if case .processing = preLivenessVerificationStatus {
+            return "Performing initial security check..."
+        }
         if !isFaceDetected {
             return "No face detected. Please position your face in the circle."
         }
@@ -53,10 +62,47 @@ class EKYCViewModel: ObservableObject {
         }
     }
 
-    // ... rest of the file is unchanged ...
-    func startLivenessCheck() {
-        self.livenessStatus = .inProgress
+    // --- MODIFIED ---
+    // This function now initiates the *pre-liveness* API check.
+    // The actual liveness color flash sequence starts only if this pre-check passes.
+    func performPreLivenessVerification() {
+        guard let ktp = ktpImage else {
+            preLivenessVerificationStatus = .error(message: "Missing KTP image for initial verification.")
+            // Consider navigating to result or showing an immediate alert here
+            return
+        }
+
+        preLivenessVerificationStatus = .processing
+        // Optionally, navigate to result or show loading UI
+
+        Task {
+            do {
+                let response = try await verificationService.performPreLivenessCheck(ktpImage: ktp)
+                if !response.isSpoof { // Assuming the API indicates `isSpoof` is false for success
+                    preLivenessVerificationStatus = .success
+                    // Only start the liveness sequence if the pre-check passes
+                    DispatchQueue.main.async { // Ensure UI updates on main thread
+                        self.startColorFlashSequence()
+                    }
+                } else {
+                    preLivenessVerificationStatus = .failure(message: "Spoof detected. Please try again.")
+                    navigateToResult() // Navigate to result to show failure
+                }
+            } catch {
+                preLivenessVerificationStatus = .error(message: error.localizedDescription)
+                navigateToResult() // Navigate to result to show error
+            }
+        }
     }
+
+    // NEW: Function to explicitly start the color flash sequence
+    func startColorFlashSequence() {
+        self.livenessStatus = .inProgress
+        // LivenessCheckView will observe this status and begin the sequence.
+        // `sessionResults` and `currentStep` will be reset within LivenessCheckView
+        // when `prepareAndStartLivenessCheck` (now `startColorFlashSequence`) is called there.
+    }
+
 
     func livenessCheckCompleted(wasSuccessful: Bool, report: String, baselineImage: UIImage?) {
         self.livenessStatus = wasSuccessful ? .success : .failure
@@ -98,6 +144,7 @@ class EKYCViewModel: ObservableObject {
         livenessStatus = .pending
         livenessReport = ""
         verificationStatus = .pending
+        preLivenessVerificationStatus = .pending // NEW: Reset pre-liveness status
         navigationPath.removeLast(navigationPath.count)
     }
     
