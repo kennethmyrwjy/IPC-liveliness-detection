@@ -68,7 +68,7 @@ class EKYCViewModel: ObservableObject {
     func performPreLivenessVerification() {
         guard let ktp = ktpImage else {
             preLivenessVerificationStatus = .error(message: "Missing KTP image for initial verification.")
-            // Consider navigating to result or showing an immediate alert here
+            navigateToResult()
             return
         }
 
@@ -78,14 +78,15 @@ class EKYCViewModel: ObservableObject {
         Task {
             do {
                 let response = try await verificationService.performPreLivenessCheck(ktpImage: ktp)
-                if !response.isSpoof { // Assuming the API indicates `isSpoof` is false for success
+                // MODIFIED: Changed !response.isSpoof to response.liveness_passed
+                if response.liveness_passed { // Assuming the API indicates 'liveness_passed' is true for success
                     preLivenessVerificationStatus = .success
                     // Only start the liveness sequence if the pre-check passes
                     DispatchQueue.main.async { // Ensure UI updates on main thread
                         self.startColorFlashSequence()
                     }
                 } else {
-                    preLivenessVerificationStatus = .failure(message: "Spoof detected. Please try again.")
+                    preLivenessVerificationStatus = .failure(message: "KTP image failed initial liveness/spoof check. Please use an original KTP.") // More specific message
                     navigateToResult() // Navigate to result to show failure
                 }
             } catch {

@@ -20,9 +20,10 @@ struct VerificationResponse: Decodable {
     let threshold: Double
 }
 
-struct SpoofDetectionResponse: Decodable {
-    let isSpoof: Bool
-    let confidence: Double?
+// MODIFIED: To match the /api/liveness endpoint response from app.py
+struct SpoofDetectionResponse: Decodable, Equatable { // Keep Equatable for comparisons
+    let liveness_passed: Bool // Changed from isSpoof to liveness_passed
+    let confidence: Double?   // Matches 'confidence' key from app.py
 }
 
 struct APIErrorResponse: Decodable {
@@ -44,8 +45,8 @@ enum LivenessStatus {
     case failure
 }
 
-// MODIFIED: Make PreLivenessVerificationStatus Equatable
-enum PreLivenessVerificationStatus: Equatable { // <<<--- ADDED : Equatable
+// MODIFIED: Make PreLivenessVerificationStatus Equatable to allow comparison operators
+enum PreLivenessVerificationStatus: Equatable {
     case pending
     case processing
     case success

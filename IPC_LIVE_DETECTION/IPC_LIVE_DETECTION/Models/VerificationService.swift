@@ -10,8 +10,8 @@ import UIKit
 
 struct VerificationService: VerificationServiceProtocol {
     private let verifyAPIURL = URL(string: "https://c-luis-e-ipc-similarity-verifier.hf.space/api/verify")!
-    // NEW: Define your spoof/pre-liveness API URL
-    private let spoofAPIURL = URL(string: "YOUR_SPOOF_API_URL_HERE")! // <<<--- REPLACE THIS WITH YOUR ACTUAL SPOOF API URL
+    // MODIFIED: Use the existing liveness API URL from your backend for the pre-liveness check
+    private let livenessAPIURL = URL(string: "https://c-luis-e-ipc-similarity-verifier.hf.space/api/liveness")! // <<<--- Make sure this is your correct Hugging Face Liveness API URL
 
     func verify(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse {
         var request = URLRequest(url: verifyAPIURL)
@@ -36,14 +36,14 @@ struct VerificationService: VerificationServiceProtocol {
         }
     }
     
-    // NEW: Function for spoof/pre-liveness check
+    // MODIFIED: Function for initial security check now calls the liveness endpoint
     func performPreLivenessCheck(ktpImage: UIImage) async throws -> SpoofDetectionResponse {
-        var request = URLRequest(url: spoofAPIURL)
+        var request = URLRequest(url: livenessAPIURL) // Pointing to your /api/liveness
         request.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        // Assuming only KTP image is needed for initial spoof check
+        // Send the KTP image as the 'image' part, as expected by /api/liveness
         request.httpBody = createMultipartBody(boundary: boundary, image: ktpImage, name: "image", filename: "ktp.jpg")
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -54,11 +54,11 @@ struct VerificationService: VerificationServiceProtocol {
 
         let decoder = JSONDecoder()
         if (200...299).contains(httpResponse.statusCode) {
-            // Decode to your new SpoofDetectionResponse
+            // Decode to SpoofDetectionResponse, which now matches the /api/liveness format
             return try decoder.decode(SpoofDetectionResponse.self, from: data)
         } else {
             let errorObj = try? decoder.decode(APIErrorResponse.self, from: data)
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorObj?.error ?? "An unknown server error occurred during spoof check. Status: \(httpResponse.statusCode)"])
+            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorObj?.error ?? "An unknown server error occurred during initial security check. Status: \(httpResponse.statusCode)"])
         }
     }
 

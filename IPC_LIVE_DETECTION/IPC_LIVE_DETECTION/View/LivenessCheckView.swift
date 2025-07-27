@@ -49,7 +49,7 @@ struct LivenessCheckView: View {
                 VStack {
                     Text(viewModel.livenessInstruction)
                         .font(.headline)
-                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : (viewModel.preLivenessVerificationStatus == .processing ? .white : .orange)) // Corrected
+                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : (viewModel.preLivenessVerificationStatus == .processing ? .white : .orange)) // Reverted to ==
                         .multilineTextAlignment(.center)
                         .animation(.easeInOut, value: viewModel.livenessInstruction)
                 }
@@ -109,7 +109,7 @@ struct LivenessCheckView: View {
                         .cornerRadius(15).shadow(radius: 5)
                 }
                 // The button is now disabled if not ready, or if initial check or liveness is in progress.
-                .disabled(!viewModel.isReadyForLivenessCheck || viewModel.preLivenessVerificationStatus == .processing || viewModel.livenessStatus == .inProgress) // Reverted back to ==
+                .disabled(!viewModel.isReadyForLivenessCheck || viewModel.preLivenessVerificationStatus == .processing || viewModel.livenessStatus == .inProgress) // Reverted to ==
                 
                 Spacer()
             }
@@ -117,13 +117,13 @@ struct LivenessCheckView: View {
         }
         .background(Color.black.edgesIgnoringSafeArea(.all))
         // Hide back button during processing states
-        .navigationBarBackButtonHidden(viewModel.livenessStatus == .inProgress || viewModel.preLivenessVerificationStatus == .processing) // Reverted back to ==
+        .navigationBarBackButtonHidden(viewModel.livenessStatus == .inProgress || viewModel.preLivenessVerificationStatus == .processing) // Reverted to ==
         .onAppear {
             originalBrightness = UIScreen.main.brightness
             // If the viewModel indicates a successful pre-liveness check and pending liveness,
             // it means we navigated back and forth, so we should re-start the color sequence
             // if we were already past the pre-liveness check.
-            if viewModel.preLivenessVerificationStatus == .success && viewModel.livenessStatus == .pending { // Reverted back to ==
+            if viewModel.preLivenessVerificationStatus == .success && viewModel.livenessStatus == .pending { // Reverted to ==
                 startColorFlashSequence()
             }
         }
