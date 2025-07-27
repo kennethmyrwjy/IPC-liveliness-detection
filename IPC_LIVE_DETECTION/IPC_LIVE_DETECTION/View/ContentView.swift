@@ -8,7 +8,8 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = EKYCViewModel()
+    // ViewModel is provided via environmentObject from IPC_LIVE_DETECTIONApp.swift
+    @EnvironmentObject var viewModel: EKYCViewModel
 
     var body: some View {
         NavigationStack(path: $viewModel.navigationPath) {
@@ -17,13 +18,14 @@ struct ContentView: View {
                     switch route {
                     case "liveness":
                         LivenessCheckView()
-                    case "result":
+                    case "loadingResult": // NEW: Route to the loading screen
+                        LoadingResultView()
+                    case "result": // Overall combined result view
                         ResultView()
                     default:
                         Text("Unknown Route")
                     }
                 }
         }
-        .environmentObject(viewModel)
     }
 }

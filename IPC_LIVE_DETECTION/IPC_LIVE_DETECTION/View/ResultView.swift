@@ -13,27 +13,22 @@ struct ResultView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 25) {
-                Text("Verification Results")
+                Text("Overall Verification Results")
                     .font(.largeTitle).fontWeight(.bold)
-
-                // 1. Initial Security Check Result
+                    .multilineTextAlignment(.center)
+                
+                // Display Overall Process Status
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("1. Initial Security Check (KTP Image)")
+                    Text("Overall Process Status")
                         .font(.title2).bold()
                     Divider()
-                    switch viewModel.initialSecurityCheckStatus {
-                    case .pending:
-                        Text("Not performed.").foregroundStyle(.secondary)
-                    case .processing:
-                        ProgressView("Processing KTP image...")
-                    case .success(let response):
-                        ResultRow(label: "Status", value: "PASSED", icon: "checkmark.shield.fill", color: .green)
-                        Text(String(format: "Confidence: %.1f%%", response.confidence ?? 0.0 * 100)).font(.subheadline).foregroundStyle(.secondary)
-                    case .failure(let message):
-                        ResultRow(label: "Status", value: "FAILED", icon: "xmark.shield.fill", color: .red)
-                        Text(message).font(.subheadline)
+                    switch viewModel.overallProcessStatus {
+                    case .pending, .processing:
+                        ProgressView("Compiling all results...")
+                    case .complete(let isSuccessful):
+                        ResultRow(label: "Status", value: isSuccessful ? "COMPLETED SUCCESSFULLY" : "FAILED", icon: isSuccessful ? "checkmark.circle.fill" : "xmark.circle.fill", color: isSuccessful ? .green : .red)
                     case .error(let message):
-                        ResultRow(label: "Status", value: "ERROR", icon: "exclamationmark.triangle.fill", color: .orange)
+                        ResultRow(label: "Status", value: "OVERALL ERROR", icon: "exclamationmark.triangle.fill", color: .orange)
                         Text(message).font(.subheadline)
                     }
                 }
@@ -41,16 +36,68 @@ struct ResultView: View {
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(12)
 
-                // 2. Color Flash Liveness Check Result
+                // 1. Liveness API Check Result (on auto-snapped selfie)
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("2. Color Flash Liveness Check (Selfie)")
+                    Text("1. Liveness API Check (Selfie)")
+                        .font(.title2).bold()
+                    Divider()
+                    // MODIFIED: Use SelfieLivenessCheckAPIStatus
+                    switch viewModel.livenessAPICallStatus {
+                    case .pending:
+                        Text("Not performed yet.").foregroundStyle(.secondary)
+                    case .processing:
+                        ProgressView("Analyzing selfie with Liveness API...")
+                    case .success(let response):
+                        ResultRow(label: "Status", value: "LIVENESS PASSED", icon: "checkmark.shield.fill", color: .green)
+                        Text(String(format: "Confidence: %.1f%%", response.confidence * 100)).font(.footnote).foregroundStyle(.secondary)
+                    case .failure(let message):
+                        ResultRow(label: "Status", value: "LIVENESS FAILED", icon: "xmark.shield.fill", color: .red)
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
+                    case .error(let message):
+                        ResultRow(label: "Status", value: "API ERROR", icon: "exclamationmark.triangle.fill", color: .orange)
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
+
+
+                // 2. Similarity Verification Check Result (KTP + auto-snapped selfie)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("2. Similarity Verification (KTP vs Selfie)")
+                        .font(.title2).bold()
+                    Divider()
+                    switch viewModel.verificationAPICallStatus {
+                    case .pending:
+                        Text("Not performed yet.").foregroundStyle(.secondary)
+                    case .processing:
+                        ProgressView("Verifying KTP and Selfie...")
+                    case .success(let response):
+                        ResultRow(label: "Status", value: "MATCH FOUND", icon: "checkmark.shield.fill", color: .green)
+                        ResultRow(label: "Similarity Score", value: String(format: "%.2f%%", response.similarity_score * 100))
+                    case .failure(let response):
+                        ResultRow(label: "Status", value: "NO MATCH", icon: "xmark.shield.fill", color: .red)
+                        ResultRow(label: "Similarity Score", value: String(format: "%.2f%%", response.similarity_score * 100))
+                    case .error(let message):
+                        ResultRow(label: "Status", value: "API ERROR", icon: "exclamationmark.triangle.fill", color: .orange)
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
+
+                // 3. Color Flash Liveness Check Result (Interactive Liveness)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("3. Interactive Color Flash Liveness")
                         .font(.title2).bold()
                     Divider()
                     switch viewModel.colorFlashLivenessStatus {
                     case .pending:
-                        Text("Not performed.").foregroundStyle(.secondary)
+                        Text("Not performed yet.").foregroundStyle(.secondary)
                     case .inProgress:
-                        ProgressView("Analyzing liveness...")
+                        ProgressView("Analyzing color flash...")
                     case .success(let report):
                         ResultRow(label: "Status", value: "PASSED", icon: "checkmark.shield.fill", color: .green)
                         Text(report).font(.footnote).foregroundStyle(.secondary)
@@ -63,22 +110,6 @@ struct ResultView: View {
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(12)
 
-                // 3. Final API Verification Result (KTP vs Selfie)
-                // Only show this if the color flash liveness passed
-                if case .success(_) = viewModel.colorFlashLivenessStatus {
-                    VerificationResultView(status: viewModel.finalVerificationStatus)
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("3. Final API Verification (KTP vs Selfie)")
-                            .font(.title2).bold()
-                        Divider()
-                        Text("Awaiting successful liveness check...").foregroundStyle(.secondary)
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground))
-                    .cornerRadius(12)
-                }
-                
                 Button(action: {
                     viewModel.resetProcess()
                 }) {

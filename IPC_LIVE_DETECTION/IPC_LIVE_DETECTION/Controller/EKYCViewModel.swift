@@ -14,44 +14,51 @@ import Vision
 class EKYCViewModel: ObservableObject {
     @Published var navigationPath = NavigationPath()
     @Published var ktpImage: UIImage?
-    @Published var selfieImage: UIImage? // This will be the baseline selfie for liveness & final verification
+    @Published var selfieImage: UIImage? // This will be the baseline selfie from color flash
 
-    @Published var isFaceDetected: Bool = false // From LivenessCameraView
-    @Published var obstructionResult: String = "Initializing..." // From LivenessCameraView
+    @Published var isFaceDetected: Bool = false
+    @Published var obstructionResult: String = "Initializing..."
 
-    // Stages of the EKYC process
-    @Published var initialSecurityCheckStatus: InitialSecurityCheckStatus = .pending // For KTP image
-    @Published var colorFlashLivenessStatus: ColorFlashLivenessStatus = .pending // For the interactive liveness
-    @Published var finalVerificationStatus: FinalVerificationStatus = .pending // For KTP vs Selfie
+    // API Result containers (hold the actual response objects)
+    @Published var livenessAPIResult: LivenessAPIResponse?
+    @Published var verificationAPIResult: VerificationResponse?
 
-    // Computed property to control LivenessCheckView's button
-    var isReadyForColorFlashLiveness: Bool {
-        // Use if case for comparing InitialSecurityCheckStatus
-        if case .success = initialSecurityCheckStatus {
-            return isFaceDetected // Only if initial check succeeded and face is detected
-        }
-        return false // Not ready if initial check hasn't succeeded
+    // Statuses for each concurrent branch (reflect processing/success/failure/error)
+    @Published var colorFlashLivenessStatus: ColorFlashLivenessProcessStatus = .pending // Status for the interactive color flash
+    @Published var livenessAPICallStatus: SelfieLivenessAPICallStatus = .pending // Status for the /api/liveness call on selfie
+    @Published var verificationAPICallStatus: VerificationAPICallStatus = .pending // Status for the /api/verify call (KTP+Selfie)
+
+    // Overall process status (combines all three concurrent branches' completion)
+    @Published var overallProcessStatus: OverallProcessStatus = .pending
+
+
+    // Computed property for LivenessCheckView button enablement
+    var isReadyForLivenessCheck: Bool {
+        // Button enabled if face is detected and no liveness flow is currently in progress
+        return isFaceDetected && colorFlashLivenessStatus.isPending &&
+               livenessAPICallStatus.isPending && verificationAPICallStatus.isPending
     }
 
-    // Dynamic instruction text for LivenessCheckView
     var livenessInstruction: String {
-        // MODIFIED: Use a switch statement for cleaner handling of multiple enum cases
-        switch initialSecurityCheckStatus {
-        case .processing:
-            return "Performing initial security check on KTP..."
-        case .failure, .error: // Handles both .failure and .error cases
-            return "Initial security check failed. Please reset and try again."
-        default: // Covers .pending and .success states
-            break // Fall through to subsequent checks if not processing, failure, or error
+        if overallProcessStatus.isProcessing {
+            return "Processing results..."
         }
-
         if !isFaceDetected {
             return "No face detected. Please position your face in the circle."
         }
         if obstructionResult != "plain" {
-            return "Warning: Obstruction detected. Verification may fail. (\(obstructionResult))"
+            return "Warning: Obstruction detected: \(obstructionResult)"
         }
-        return "Face detected. Ready to start color flash."
+        if colorFlashLivenessStatus.isPending {
+            return "Face detected. Ready to start color flash."
+        }
+        if colorFlashLivenessStatus.isProcessing {
+            return "Performing color flash..."
+        }
+        if colorFlashLivenessStatus.isFinished { // If color flash is done
+            return "Color flash complete. Waiting for analysis..."
+        }
+        return "Initializing..." // Default
     }
 
     private let verificationService: VerificationServiceProtocol
@@ -60,101 +67,138 @@ class EKYCViewModel: ObservableObject {
     init(service: VerificationServiceProtocol = VerificationService()) {
         self.verificationService = service
         do {
-            self.obstructionModel = try VNCoreMLModel(for: model_obstruction().model)
+            let modelConfiguration = MLModelConfiguration()
+            self.obstructionModel = try VNCoreMLModel(for: model_obstruction(configuration: modelConfiguration).model)
         } catch {
             fatalError("Failed to load the model_obstruction Core ML model: \(error)")
         }
     }
 
-    // MARK: - Process Flow Control
+    // MARK: - Core Workflow Functions
 
-    // Step 1: Initiates the initial security check on the KTP image
-    func performInitialSecurityCheck() {
-        guard let ktp = ktpImage else {
-            initialSecurityCheckStatus = .error(message: "KTP image is missing to start security check.")
-            return
-        }
+    // Triggered by LivenessCheckView button. Captures selfie and starts color flash.
+    // API calls are triggered AFTER color flash is complete.
+    func startLivenessProcess(snappedSelfie: UIImage) {
+        self.selfieImage = snappedSelfie // Store the baseline selfie
+        self.colorFlashLivenessStatus = .inProgress // Start the color flash process
+        // Color flash will now run. API calls will start in colorFlashSequenceCompleted.
+    }
 
-        initialSecurityCheckStatus = .processing
-        Task {
-            do {
-                let response = try await verificationService.uploadImage(
-                    to: URL(string: verificationService.baseURL + "/api/liveness")!, // Direct call to liveness API for KTP
-                    image: ktp,
-                    fieldName: "image", // Matches API expectation
-                    responseType: LivenessAPIResponse.self
-                )
-                
-                if response.liveness_passed {
-                    initialSecurityCheckStatus = .success(response: response)
-                    // If KTP check passes, prepare for color flash liveness (handled by LivenessCheckView's onAppear)
-                } else {
-                    initialSecurityCheckStatus = .failure(message: "KTP image failed initial liveness/spoof check. Score: \(response.confidence ?? 0.0)")
-                    // Navigate to result to show initial failure
-                    navigateToResult()
+    // Called by LivenessCameraView.Coordinator when color flash sequence is done
+    func colorFlashSequenceCompleted(wasSuccessful: Bool, report: String, snappedSelfie: UIImage?) {
+        DispatchQueue.main.async { // Ensure update on MainActor
+            self.colorFlashLivenessStatus = wasSuccessful ? .success(report: report) : .failure(report: report)
+            // Ensure selfieImage is correctly set here if it wasn't already (e.g., if it was passed via snappedSelfie)
+            if self.selfieImage == nil {
+                self.selfieImage = snappedSelfie
+            }
+
+            // Navigate to the loading screen immediately after color flash finishes
+            self.navigateToLoadingResult()
+
+            // Trigger concurrent API calls ONLY IF selfie and KTP are available (regardless of color flash success)
+            if let selfie = snappedSelfie, let ktp = self.ktpImage {
+                self.overallProcessStatus = .processing // Indicate API processing has begun
+                Task {
+                    await self.performConcurrentAPIChecks(ktp: ktp, selfie: selfie)
+                    // The overallProcessStatus will be set to complete/error inside performConcurrentAPIChecks or its sub-calls.
                 }
-            } catch {
-                initialSecurityCheckStatus = .error(message: error.localizedDescription)
-                navigateToResult()
+            } else {
+                // If selfie or KTP is missing (which shouldn't happen if flow is correct), deem APIs as errored
+                self.livenessAPICallStatus = .error(message: "Selfie or KTP missing for API calls.")
+                self.verificationAPICallStatus = .error(message: "Selfie or KTP missing for API calls.")
+                self.overallProcessStatus = .complete(isSuccessful: false) // Mark overall failed due to missing input
             }
         }
     }
 
-    // Step 2: Initiates the color flash sequence (called by LivenessCheckView when ready)
-    func startColorFlashLiveness() {
-        self.colorFlashLivenessStatus = .inProgress
-        // LivenessCheckView observes this and begins the sequence.
-    }
+    // Performs both API checks concurrently (called after color flash is done)
+    private func performConcurrentAPIChecks(ktp: UIImage, selfie: UIImage) async {
+        await withTaskGroup(of: Void.self) { group in
+            // Branch 1: Liveness API call (selfie only)
+            group.addTask { await self.performLivenessAPICall(selfie: selfie) }
 
-    // Step 2.1: Callback from LivenessCameraView when color flash liveness is complete
-    func colorFlashLivenessCompleted(wasSuccessful: Bool, report: String, baselineImage: UIImage?) {
-        self.colorFlashLivenessStatus = wasSuccessful ? .success(report: report) : .failure(report: report)
-        self.selfieImage = baselineImage // Store the selfie captured during liveness check
+            // Branch 2: Verification API call (KTP + selfie)
+            group.addTask { await self.performVerificationAPICall(ktp: ktp, selfie: selfie) }
+            
+            await group.waitForAll() // Wait for both API calls to finish
 
-        if wasSuccessful, let _ = selfieImage, let _ = ktpImage {
-            performFinalVerification() // Proceed to final verification
-        } else {
-            // If liveness failed or images are missing, go to result view
-            navigateToResult()
+            // After APIs are done, determine overall process status
+            self.determineOverallProcessCompletion()
         }
     }
 
-    // Step 3: Performs the final KTP-Selfie similarity verification
-    func performFinalVerification() {
-        guard let ktp = ktpImage, let selfie = selfieImage else {
-            finalVerificationStatus = .error(message: "Missing KTP or selfie image for final verification.")
-            navigateToResult()
-            return
+    // Individual concurrent API call for /api/liveness
+    private func performLivenessAPICall(selfie: UIImage) async {
+        livenessAPICallStatus = .processing
+        do {
+            let response = try await verificationService.performLivenessAPI(selfieImage: selfie)
+            livenessAPIResult = response // Store the actual response object
+            livenessAPICallStatus = response.liveness_passed ? .success(response: response) : .failure(message: "Selfie Liveness failed with confidence: \(response.confidence)")
+        } catch {
+            livenessAPICallStatus = .error(message: error.localizedDescription)
         }
+    }
 
-        finalVerificationStatus = .processing
-        // Optionally navigate to result early to show "processing"
-        navigateToResult()
+    // Individual concurrent API call for /api/verify
+    private func performVerificationAPICall(ktp: UIImage, selfie: UIImage) async {
+        verificationAPICallStatus = .processing
+        do {
+            let response = try await verificationService.performVerificationAPI(ktpImage: ktp, selfieImage: selfie)
+            verificationAPIResult = response // Store the actual response object
+            verificationAPICallStatus = response.verified ? .success(response: response) : .failure(response: response)
+        } catch {
+            verificationAPICallStatus = .error(message: error.localizedDescription)
+        }
+    }
 
-        Task {
-            do {
-                let response = try await verificationService.uploadTwoImages(ktpImage: ktp, selfieImage: selfie) // Using the new service method
-                finalVerificationStatus = response.verified ? .success(response: response) : .failure(response: response)
-            } catch {
-                finalVerificationStatus = .error(message: error.localizedDescription)
+    // Determines overall process completion (called after APIs are done)
+    private func determineOverallProcessCompletion() {
+        DispatchQueue.main.async { // Ensure update on MainActor
+            // All three branches (color flash + 2 APIs) are finished by this point.
+            // Determine overall success based on combined results.
+            
+            let allSucceeded = self.colorFlashLivenessStatus.isSuccess &&
+                               self.livenessAPICallStatus.isSuccess &&
+                               self.verificationAPICallStatus.isSuccess
+
+            let anyBranchErrored = self.livenessAPICallStatus.isError || self.verificationAPICallStatus.isError
+            let anyBranchFailed = self.colorFlashLivenessStatus.isFailure || self.livenessAPICallStatus.isFailure || self.verificationAPICallStatus.isFailure
+
+            if anyBranchErrored {
+                self.overallProcessStatus = .complete(isSuccessful: false)
+            } else if anyBranchFailed {
+                self.overallProcessStatus = .complete(isSuccessful: false)
+            } else {
+                self.overallProcessStatus = .complete(isSuccessful: allSucceeded)
             }
+            // MODIFIED: Removed navigateToResult() call here.
+            // LoadingResultView will observe overallProcessStatus and trigger navigation.
         }
     }
 
     // MARK: - Navigation & Reset
+
     func resetProcess() {
         ktpImage = nil
-        selfieImage = nil
+        self.selfieImage = nil
         isFaceDetected = false
         obstructionResult = "Initializing..."
-        initialSecurityCheckStatus = .pending
+        livenessAPIResult = nil
+        verificationAPIResult = nil
         colorFlashLivenessStatus = .pending
-        finalVerificationStatus = .pending
-        navigationPath.removeLast(navigationPath.count) // Go back to root
+        livenessAPICallStatus = .pending
+        verificationAPICallStatus = .pending
+        overallProcessStatus = .pending
+        navigationPath.removeLast(navigationPath.count) // Go back to root (KTPCaptureView)
     }
     
     func navigateToLiveness() {
         navigationPath.append("liveness")
+    }
+
+    private func navigateToLoadingResult() {
+        navigationPath.append("loadingResult")
     }
 
     private func navigateToResult() {

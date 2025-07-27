@@ -17,7 +17,7 @@ struct VerificationResponse: Decodable, Equatable {
 
 struct LivenessAPIResponse: Decodable, Equatable {
     let liveness_passed: Bool
-    let confidence: Double // Your app.py also sends confidence as float
+    let confidence: Double
 }
 
 struct APIErrorResponse: Decodable, Equatable {
@@ -26,51 +26,92 @@ struct APIErrorResponse: Decodable, Equatable {
 
 // MARK: - Protocols for Services
 protocol VerificationServiceProtocol {
-    // MODIFIED: Add baseURL to the protocol
-    var baseURL: String { get }
+    var baseURL: String { get } // Base URL for API calls
 
-    func uploadImage<T: Decodable>(to url: URL, image: UIImage, fieldName: String, responseType: T.Type) async throws -> T
-    func uploadTwoImages(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse
+    func performLivenessAPI(selfieImage: UIImage) async throws -> LivenessAPIResponse // For /api/liveness endpoint
+    func performVerificationAPI(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse // For /api/verify endpoint
 }
 
 // MARK: - Enums to Manage UI State in ViewModel
-enum FinalVerificationStatus: Equatable {
+
+// Status for the /api/liveness call on selfie
+enum SelfieLivenessAPICallStatus: Equatable {
     case pending
     case processing
-    case success(response: VerificationResponse)
-    case failure(response: VerificationResponse)
-    case error(message: String)
+    case success(response: LivenessAPIResponse) // Associated response is LivenessAPIResponse
+    case failure(message: String) // Message for API-determined failure
+    case error(message: String)   // Message for network/decoding error
+
+    // Helper computed properties for easy checks
+    var isSuccess: Bool { if case .success = self { return true } else { return false } }
+    var isFailure: Bool { if case .failure = self { return true } else { return false } }
+    var isError: Bool { if case .error = self { return true } else { return false } }
+    var isFinished: Bool { return isSuccess || isFailure || isError }
+    var isProcessing: Bool { if case .processing = self { return true } else { return false } }
+    var isPending: Bool { if case .pending = self { return true } else { return false } } // ADDED THIS
 }
 
-enum InitialSecurityCheckStatus: Equatable {
+// Status for the /api/verify call (KTP+Selfie)
+enum VerificationAPICallStatus: Equatable {
     case pending
     case processing
-    case success(response: LivenessAPIResponse)
-    case failure(message: String)
+    case success(response: VerificationResponse) // Associated response is VerificationResponse
+    case failure(response: VerificationResponse) // Failure includes original response for details
     case error(message: String)
+
+    // Helper computed properties for easy checks
+    var isSuccess: Bool { if case .success = self { return true } else { return false } }
+    var isFailure: Bool { if case .failure = self { return true } else { return false } }
+    var isError: Bool { if case .error = self { return true } else { return false } }
+    var isFinished: Bool { return isSuccess || isFailure || isError }
+    var isProcessing: Bool { if case .processing = self { return true } else { return false } }
+    var isPending: Bool { if case .pending = self { return true } else { return false } } // ADDED THIS
 }
 
-enum ColorFlashLivenessStatus: Equatable {
+// Status for the interactive Color Flash liveness process
+enum ColorFlashLivenessProcessStatus: Equatable {
     case pending
     case inProgress
-    case success(report: String)
-    case failure(report: String)
+    case success(report: String) // Store detailed report
+    case failure(report: String) // Store detailed report
+
+    // Helper computed properties for easy checks
+    var isSuccess: Bool { if case .success = self { return true } else { return false } }
+    var isFailure: Bool { if case .failure = self { return true } else { return false } }
+    var isFinished: Bool { return isSuccess || isFailure } // A process is finished if it succeeded or failed
+    var isProcessing: Bool { if case .inProgress = self { return true } else { return false } } // Color flash uses 'inProgress' for processing
+    var isPending: Bool { if case .pending = self { return true } else { return false } } // ADDED THIS
+}
+
+// Overall process status (combines all three concurrent branches)
+enum OverallProcessStatus: Equatable {
+    case pending
+    case processing
+    case complete(isSuccessful: Bool)
+    case error(message: String)
+
+    // Helper computed properties
+    var isPending: Bool { if case .pending = self { return true } else { return false } }
+    var isProcessing: Bool { if case .processing = self { return true } else { return false } }
+    var isComplete: Bool { if case .complete = self { return true } else { return false } }
+    var isError: Bool { if case .error = self { return true } else { return false } }
+    var isFinished: Bool { return isComplete || isError }
 }
 
 
 // MARK: - Reusable SwiftUI Views for Results
 struct VerificationResultView: View {
-    let status: FinalVerificationStatus
+    let status: VerificationAPICallStatus // Uses VerificationAPICallStatus
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("API Verification")
+            Text("Similarity Verification")
                 .font(.title2).bold()
             Divider()
 
             switch status {
             case .pending:
-                Text("Awaiting liveness check completion...").foregroundStyle(.secondary)
+                Text("Waiting for input...").foregroundStyle(.secondary)
             case .processing:
                 ProgressView("Verifying with server...")
             case .success(let response):

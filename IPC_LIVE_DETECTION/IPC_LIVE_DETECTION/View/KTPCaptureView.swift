@@ -24,16 +24,16 @@ struct KTPCaptureView: View {
             }
 
             Button(action: {
-                viewModel.navigateToLiveness()
+                viewModel.navigateToLiveness() // Navigate directly to the liveness (selfie) capture
             }) {
-                Label("Next Step", systemImage: "arrow.right.circle.fill")
+                Label("Next Step: Capture Face", systemImage: "arrow.right.circle.fill")
                     .font(.headline).padding()
                     .frame(maxWidth: .infinity)
                     .background(viewModel.ktpImage != nil ? Color.blue : Color.gray)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            .disabled(viewModel.ktpImage == nil)
+            .disabled(viewModel.ktpImage == nil) // Disabled if KTP not captured
         }
         .padding()
         .navigationTitle("KTP Verification")
@@ -84,11 +84,9 @@ struct KTPCaptureView: View {
             VStack {
                 Image(uiImage: ktpImage)
                     .resizable()
-                    // --- CHANGE THIS LINE ---
-                    .scaledToFill() // From .scaledToFit()
-                    // ----------------------
-                    .frame(height: 250) // This now defines the cropping area
-                    .clipShape(RoundedRectangle(cornerRadius: 12)) // This performs the crop
+                    .scaledToFill()
+                    .frame(height: 250)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(Color.blue, lineWidth: 2)
