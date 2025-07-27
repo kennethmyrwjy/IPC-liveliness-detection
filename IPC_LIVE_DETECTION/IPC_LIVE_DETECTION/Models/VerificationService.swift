@@ -8,93 +8,79 @@
 import Foundation
 import UIKit
 
+// Conforms to the updated protocol
 struct VerificationService: VerificationServiceProtocol {
-    private let verifyAPIURL = URL(string: "https://c-luis-e-ipc-similarity-verifier.hf.space/api/verify")!
-    // MODIFIED: Use the existing liveness API URL from your backend for the pre-liveness check
-    private let livenessAPIURL = URL(string: "https://c-luis-e-ipc-similarity-verifier.hf.space/api/liveness")! // <<<--- Make sure this is your correct Hugging Face Liveness API URL
+    // ⚠️ IMPORTANT: Replace with your actual Hugging Face URL for the base
+    let baseURL = "https://c-luis-e-ipc-similarity-verifier.hf.space"
 
-    func verify(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse {
-        var request = URLRequest(url: verifyAPIURL)
+    // Computed properties for the full API endpoint URLs
+    private var verifyURL: URL { URL(string: "\(baseURL)/api/verify")! } // From ContentView
+    private var livenessURL: URL { URL(string: "\(baseURL)/api/liveness")! } // From ContentView
+
+    // Generic function for uploading a single image (from ContentView.swift)
+    func uploadImage<T: Decodable>(to url: URL, image: UIImage, fieldName: String, responseType: T.Type) async throws -> T {
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        request.httpBody = createMultipartBody(boundary: boundary, ktpImage: ktpImage, selfieImage: selfieImage)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Invalid server response."])
-        }
-
-        let decoder = JSONDecoder()
-        if (200...299).contains(httpResponse.statusCode) {
-            return try decoder.decode(VerificationResponse.self, from: data)
-        } else {
-            let errorObj = try? decoder.decode(APIErrorResponse.self, from: data)
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorObj?.error ?? "An unknown server error occurred. Status: \(httpResponse.statusCode)"])
-        }
-    }
-    
-    // MODIFIED: Function for initial security check now calls the liveness endpoint
-    func performPreLivenessCheck(ktpImage: UIImage) async throws -> SpoofDetectionResponse {
-        var request = URLRequest(url: livenessAPIURL) // Pointing to your /api/liveness
-        request.httpMethod = "POST"
-        let boundary = "Boundary-\(UUID().uuidString)"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        // Send the KTP image as the 'image' part, as expected by /api/liveness
-        request.httpBody = createMultipartBody(boundary: boundary, image: ktpImage, name: "image", filename: "ktp.jpg")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Invalid server response."])
-        }
-
-        let decoder = JSONDecoder()
-        if (200...299).contains(httpResponse.statusCode) {
-            // Decode to SpoofDetectionResponse, which now matches the /api/liveness format
-            return try decoder.decode(SpoofDetectionResponse.self, from: data)
-        } else {
-            let errorObj = try? decoder.decode(APIErrorResponse.self, from: data)
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorObj?.error ?? "An unknown server error occurred during initial security check. Status: \(httpResponse.statusCode)"])
-        }
-    }
-
-    // Helper function for single image upload (used by performPreLivenessCheck)
-    private func createMultipartBody(boundary: String, image: UIImage, name: String, filename: String) -> Data {
         var body = Data()
-
         if let data = image.jpegData(compressionQuality: 0.8) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"image.jpg\"\r\n".data(using: .utf8)!)
             body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
             body.append(data)
             body.append("\r\n".data(using: .utf8)!)
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        return body
-    }
-    
-    // Existing helper function for two images (used by verify)
-    private func createMultipartBody(boundary: String, ktpImage: UIImage, selfieImage: UIImage) -> Data {
-        var body = Data()
-        
-        func appendImageField(name: String, image: UIImage, filename: String) {
-            if let data = image.jpegData(compressionQuality: 0.8) {
-                body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
-                body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
-                body.append(data)
-                body.append("\r\n".data(using: .utf8)!)
-            }
-        }
+        request.httpBody = body
 
-        appendImageField(name: "ktp_image", image: ktpImage, filename: "ktp.jpg")
-        appendImageField(name: "selfie_image", image: selfieImage, filename: "selfie.jpg")
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Invalid server response."]) }
+
+        let decoder = JSONDecoder()
+        if (200...299).contains(httpResponse.statusCode) {
+            return try decoder.decode(T.self, from: data)
+        } else {
+            let errorResponse = try? decoder.decode(APIErrorResponse.self, from: data)
+            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorResponse?.error ?? "An unknown server error occurred."])
+        }
+    }
+
+    // Specific function for uploading two images (from ContentView.swift)
+    func uploadTwoImages(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse {
+        var request = URLRequest(url: verifyURL)
+        request.httpMethod = "POST"
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         
-        return body
+        var body = Data()
+        if let ktpData = ktpImage.jpegData(compressionQuality: 0.8) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"ktp_image\"; filename=\"ktp.jpg\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(ktpData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        if let selfieData = selfieImage.jpegData(compressionQuality: 0.8) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"selfie_image\"; filename=\"selfie.jpg\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(selfieData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Invalid server response."]) }
+
+        let decoder = JSONDecoder()
+        if (200...299).contains(httpResponse.statusCode) {
+            return try decoder.decode(VerificationResponse.self, from: data)
+        } else {
+            let errorResponse = try? decoder.decode(APIErrorResponse.self, from: data)
+            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: errorResponse?.error ?? "An unknown server error occurred."])
+        }
     }
 }

@@ -6,18 +6,22 @@
 //
 
 import SwiftUI
+import AVFoundation // Make sure this is imported if not already
+import Vision     // Make sure this is imported if not already
+import QuartzCore // Make sure this is imported if not already
 
 struct LivenessCheckView: View {
     @EnvironmentObject var viewModel: EKYCViewModel
     
     @State private var flashColor: Color = .black
-    @State private var colorSequence: [Color] = []
-    @State private var sessionResults: [(expected: String, detected: String)] = []
-    @State private var currentStep = 0
+    // @State private var colorSequence: [Color] = [] // Moved to Coordinator
+    // @State private var sessionResults: [(expected: String, detected: String)] = [] // Moved to Coordinator
+    // @State private var currentStep = 0 // Moved to Coordinator
     @State private var originalBrightness: CGFloat = UIScreen.main.brightness
     
-    @State private var shouldCaptureBaselineAndDetectFace = false
-    @State private var shouldCaptureActive = false
+    // These bindings are correctly used to trigger actions in the CameraView
+    @State private var shouldCaptureBaseline: Bool = false
+    @State private var shouldCaptureActive: Bool = false
 
     var body: some View {
         ZStack {
@@ -36,26 +40,40 @@ struct LivenessCheckView: View {
 
                 LivenessCameraView(
                     viewModel: viewModel,
-                    shouldCaptureBaseline: $shouldCaptureBaselineAndDetectFace,
+                    shouldCaptureBaseline: $shouldCaptureBaseline,
                     shouldCaptureActive: $shouldCaptureActive,
-                    onAnalysisComplete: handleAnalysisCompletion,
-                    onBaselineCaptured: handleBaselineCapture
+                    onAnalysisComplete: { result in /* Coordinator will call ViewModel directly now */ },
+                    onBaselineCaptured: { /* Coordinator will call ViewModel directly now */ },
+                    // MODIFIED: Added argument for onFlashColorChange
+                    onFlashColorChange: { newColor in
+                        self.flashColor = newColor
+                    }
                 )
                 .frame(width: 300, height: 300)
                 .clipShape(Circle())
-                .overlay(Circle().stroke(viewModel.livenessStatus == .inProgress ? Color.yellow : Color.white, lineWidth: 4))
+                .overlay(Circle().stroke(viewModel.colorFlashLivenessStatus == .inProgress ? Color.yellow : Color.white, lineWidth: 4))
 
-                // Instruction Text - Updated based on preLivenessVerificationStatus
+                // Instruction Text
                 VStack {
                     Text(viewModel.livenessInstruction)
                         .font(.headline)
-                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : (viewModel.preLivenessVerificationStatus == .processing ? .white : .orange)) // Reverted to ==
+                        .foregroundColor(viewModel.obstructionResult == "plain" ? .green : (viewModel.initialSecurityCheckStatus == .processing ? .white : .orange))
                         .multilineTextAlignment(.center)
                         .animation(.easeInOut, value: viewModel.livenessInstruction)
+
+                    // DEBUG TEXT ADDED HERE:
+                    Text("KTP Check Status: \(String(describing: viewModel.initialSecurityCheckStatus))")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.top, 5)
+                    Text("Face Detected: \(viewModel.isFaceDetected ? "Yes" : "No")")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.8))
+                    // END DEBUG TEXT
                 }
                 .frame(minHeight: 60)
 
-                // --- NEW WARNING/ERROR VIEWS ---
+                // --- WARNING/ERROR VIEWS ---
                 if viewModel.isFaceDetected && viewModel.obstructionResult != "plain" {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -68,7 +86,9 @@ struct LivenessCheckView: View {
                     .background(Color.yellow.opacity(0.3))
                     .cornerRadius(8)
                     .transition(.opacity.animation(.easeInOut))
-                } else if case .failure(let message) = viewModel.preLivenessVerificationStatus {
+                }
+                // Display initial security check failure/error
+                else if case .failure(let message) = viewModel.initialSecurityCheckStatus {
                      HStack {
                         Image(systemName: "xmark.octagon.fill")
                             .foregroundColor(.red)
@@ -80,7 +100,7 @@ struct LivenessCheckView: View {
                     .background(Color.red.opacity(0.3))
                     .cornerRadius(8)
                     .transition(.opacity.animation(.easeInOut))
-                } else if case .error(let message) = viewModel.preLivenessVerificationStatus {
+                } else if case .error(let message) = viewModel.initialSecurityCheckStatus {
                      HStack {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundColor(.orange)
@@ -94,37 +114,43 @@ struct LivenessCheckView: View {
                     .transition(.opacity.animation(.easeInOut))
                 }
                 else {
-                    // Add a spacer to prevent the button from jumping up and down
                     Spacer().frame(height: 38)
                 }
                 
                 Button(action: {
-                    // Call the new pre-liveness verification function in ViewModel
-                    viewModel.performPreLivenessVerification()
+                    // Start the initial security check on KTP
+                    viewModel.performInitialSecurityCheck()
                 }) {
-                    Text(viewModel.preLivenessVerificationStatus == .processing ? "Checking..." : (viewModel.livenessStatus == .inProgress ? "Checking..." : "Start Liveness Check"))
+                    Text(buttonTextForLiveness())
                         .font(.title2).fontWeight(.bold).foregroundColor(.white).padding()
                         .frame(maxWidth: .infinity)
-                        .background(viewModel.isReadyForLivenessCheck ? Color.blue : Color.gray)
+                        .background(buttonBackgroundColorForLiveness())
                         .cornerRadius(15).shadow(radius: 5)
                 }
-                // The button is now disabled if not ready, or if initial check or liveness is in progress.
-                .disabled(!viewModel.isReadyForLivenessCheck || viewModel.preLivenessVerificationStatus == .processing || viewModel.livenessStatus == .inProgress) // Reverted to ==
+                // Disable button based on initial check status and liveness status
+                .disabled(viewModel.initialSecurityCheckStatus == .processing ||
+                          viewModel.colorFlashLivenessStatus == .inProgress ||
+                          !viewModel.isFaceDetected || // Requires face detection
+                          viewModel.initialSecurityCheckStatus == .success(response: LivenessAPIResponse(liveness_passed: true, confidence: 0.0)) // Disable if already successful (prevent re-trigger)
+                         )
                 
                 Spacer()
             }
             .padding()
         }
         .background(Color.black.edgesIgnoringSafeArea(.all))
-        // Hide back button during processing states
-        .navigationBarBackButtonHidden(viewModel.livenessStatus == .inProgress || viewModel.preLivenessVerificationStatus == .processing) // Reverted to ==
+        // Hide back button during any processing or in-progress state
+        .navigationBarBackButtonHidden(viewModel.initialSecurityCheckStatus == .processing || viewModel.colorFlashLivenessStatus == .inProgress)
         .onAppear {
             originalBrightness = UIScreen.main.brightness
-            // If the viewModel indicates a successful pre-liveness check and pending liveness,
-            // it means we navigated back and forth, so we should re-start the color sequence
-            // if we were already past the pre-liveness check.
-            if viewModel.preLivenessVerificationStatus == .success && viewModel.livenessStatus == .pending { // Reverted to ==
-                startColorFlashSequence()
+            // If initial check was already successful, and color flash is pending, start it.
+            if case .success(_) = viewModel.initialSecurityCheckStatus, viewModel.colorFlashLivenessStatus == .pending {
+                // Now, call the Coordinator's start sequence directly from here.
+                // The Coordinator is responsible for initiating its internal state.
+                // We will rely on LivenessCameraView's `updateUIViewController`
+                // to trigger the Coordinator when `viewModel.colorFlashLivenessStatus` becomes `.inProgress`.
+                // So, `viewModel.startColorFlashLiveness()` is the correct trigger from LivenessCheckView.
+                viewModel.startColorFlashLiveness()
             }
         }
         .onDisappear {
@@ -132,96 +158,40 @@ struct LivenessCheckView: View {
         }
     }
     
-    // This function is now called by the ViewModel when it's time to start the actual color sequence
-    private func startColorFlashSequence() {
-        sessionResults.removeAll()
-        currentStep = 0
-        UIScreen.main.brightness = 1.0
-        generateColorSequence()
-        shouldCaptureBaselineAndDetectFace = true
-    }
-    
-    private func generateColorSequence() {
-        let possibleColors: [Color] = [Color(UIColor.cyan), Color(UIColor.magenta), .yellow]
-        self.colorSequence = (0..<6).map { _ in possibleColors.randomElement()! }
-    }
-    
-    private func handleBaselineCapture() {
-        executeNextFlashStep()
-    }
-
-    private func handleAnalysisCompletion(result: (cyan: Float, magenta: Float, yellow: Float)) {
-        self.flashColor = .black
-        
-        guard result.cyan != -1 else {
-            abortLivenessCheck(reason: "Liveness check failed: No face was detected during the process.")
-            return
-        }
-
-        var detectedColor = "Inconclusive"
-        if result.cyan > result.magenta && result.cyan > result.yellow { detectedColor = "Cyan" }
-        else if result.magenta > result.cyan && result.magenta > result.yellow { detectedColor = "Magenta" }
-        else if result.yellow > result.cyan && result.yellow > result.magenta { detectedColor = "Yellow" }
-        
-        let expectedColor = colorToString(colorSequence[currentStep])
-        self.sessionResults.append((expected: expectedColor, detected: detectedColor))
-        
-        self.currentStep += 1
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            executeNextFlashStep()
+    // Helper to determine button text
+    private func buttonTextForLiveness() -> String {
+        if viewModel.initialSecurityCheckStatus == .processing {
+            return "Checking KTP..."
+        } else if viewModel.colorFlashLivenessStatus == .inProgress {
+            return "Performing Liveness..."
+        } else {
+            return "Start Liveness Check"
         }
     }
 
-    private func executeNextFlashStep() {
-        guard currentStep < colorSequence.count else {
-            endLivenessCheck()
-            return
+    // Helper to determine button background color
+    private func buttonBackgroundColorForLiveness() -> Color {
+        if viewModel.initialSecurityCheckStatus == .processing || viewModel.colorFlashLivenessStatus == .inProgress {
+            return .gray
         }
-        
-        self.flashColor = self.colorSequence[currentStep]
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.shouldCaptureActive = true
+        // Button enabled if KTP check is pending AND face is detected
+        else if viewModel.initialSecurityCheckStatus == .pending && viewModel.isFaceDetected {
+            return .blue
         }
-    }
-    
-    private func abortLivenessCheck(reason: String) {
-        UIScreen.main.brightness = originalBrightness
-        let report = "Liveness Failed:\n\(reason)"
-        viewModel.livenessCheckCompleted(wasSuccessful: false, report: report, baselineImage: nil)
-        viewModel.preLivenessVerificationStatus = .pending // Reset pre-liveness status to allow retry from the start
-    }
-    
-    private func endLivenessCheck() {
-        UIScreen.main.brightness = originalBrightness
-        self.flashColor = .black
-        
-        var report = "Liveness Analysis Complete:\n\n"
-        var successCount = 0
-        for (index, result) in sessionResults.enumerated() {
-            let status = result.expected.lowercased() == result.detected.lowercased() ? "✅" : "❌"
-            if status == "✅" { successCount += 1 }
-            report += "Flash \(index + 1): Expected \(result.expected), Detected \(result.detected) \(status)\n"
+        else {
+            return .gray // Disabled state
         }
-        
-        let wasSuccessful = successCount >= 4
-        let finalStatus = wasSuccessful ? "Liveness Confirmed" : "Liveness Failed"
-        report += "\nFinal Result: \(finalStatus)"
-        
-        viewModel.livenessCheckCompleted(
-            wasSuccessful: wasSuccessful,
-            report: report,
-            baselineImage: viewModel.selfieImage
-        )
     }
 
-    private func colorToString(_ color: Color) -> String {
-        switch color {
-        case Color(UIColor.cyan): return "Cyan"
-        case Color(UIColor.magenta): return "Magenta"
-        case .yellow: return "Yellow"
-        default: return "Unknown"
-        }
-    }
+    // These methods were moved to Coordinator in CameraComponents.swift.
+    // The LivenessCheckView's responsibility is now mainly UI and binding to ViewModel.
+    // The logic to start/manage the color flash sequence now resides in the Coordinator.
+    // The `viewModel.startColorFlashLiveness()` call is the trigger.
+
+    // Removed the now redundant `private func startColorFlashSequence()` from here.
+    // Removed the now redundant `private func handleBaselineCapture()` from here.
+    // Removed the now redundant `private func handleAnalysisCompletion(result: ...)` from here.
+    // Removed the now redundant `private func abortLivenessCheck(reason: ...)` from here.
+    // Removed the now redundant `private func endLivenessCheck()` from here.
+    // Removed the now redundant `private func colorToString(_ color: Color)` from here.
 }

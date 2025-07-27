@@ -7,30 +7,34 @@
 
 import SwiftUI
 
-protocol VerificationServiceProtocol {
-    func verify(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse
-    // Add new method for spoof/pre-liveness verification
-    func performPreLivenessCheck(ktpImage: UIImage) async throws -> SpoofDetectionResponse // Example
-}
-
-struct VerificationResponse: Decodable {
+// MARK: - API Response Structs
+struct VerificationResponse: Decodable, Equatable {
     let verified: Bool
     let similarity_score: Double
     let deep_feature_similarity: Double
     let threshold: Double
 }
 
-// MODIFIED: To match the /api/liveness endpoint response from app.py
-struct SpoofDetectionResponse: Decodable, Equatable { // Keep Equatable for comparisons
-    let liveness_passed: Bool // Changed from isSpoof to liveness_passed
-    let confidence: Double?   // Matches 'confidence' key from app.py
+struct LivenessAPIResponse: Decodable, Equatable {
+    let liveness_passed: Bool
+    let confidence: Double // Your app.py also sends confidence as float
 }
 
-struct APIErrorResponse: Decodable {
+struct APIErrorResponse: Decodable, Equatable {
     let error: String
 }
 
-enum APIVerificationStatus {
+// MARK: - Protocols for Services
+protocol VerificationServiceProtocol {
+    // MODIFIED: Add baseURL to the protocol
+    var baseURL: String { get }
+
+    func uploadImage<T: Decodable>(to url: URL, image: UIImage, fieldName: String, responseType: T.Type) async throws -> T
+    func uploadTwoImages(ktpImage: UIImage, selfieImage: UIImage) async throws -> VerificationResponse
+}
+
+// MARK: - Enums to Manage UI State in ViewModel
+enum FinalVerificationStatus: Equatable {
     case pending
     case processing
     case success(response: VerificationResponse)
@@ -38,24 +42,25 @@ enum APIVerificationStatus {
     case error(message: String)
 }
 
-enum LivenessStatus {
-    case pending
-    case inProgress
-    case success
-    case failure
-}
-
-// MODIFIED: Make PreLivenessVerificationStatus Equatable to allow comparison operators
-enum PreLivenessVerificationStatus: Equatable {
+enum InitialSecurityCheckStatus: Equatable {
     case pending
     case processing
-    case success
+    case success(response: LivenessAPIResponse)
     case failure(message: String)
     case error(message: String)
 }
 
+enum ColorFlashLivenessStatus: Equatable {
+    case pending
+    case inProgress
+    case success(report: String)
+    case failure(report: String)
+}
+
+
+// MARK: - Reusable SwiftUI Views for Results
 struct VerificationResultView: View {
-    let status: APIVerificationStatus
+    let status: FinalVerificationStatus
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
