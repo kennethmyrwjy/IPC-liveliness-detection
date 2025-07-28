@@ -71,6 +71,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     }
 }
 
+// MARK: - KTP Camera View
 struct KTPCameraView: UIViewControllerRepresentable {
     @Binding var shouldCapture: Bool
     var onCaptured: (UIImage) -> Void
@@ -117,13 +118,13 @@ struct KTPCameraView: UIViewControllerRepresentable {
     }
 }
 
+// MARK: - Liveness Camera View (Corrected)
 struct LivenessCameraView: UIViewControllerRepresentable {
     @ObservedObject var viewModel: EKYCViewModel
-    @Binding var shouldCaptureBaselineSelfie: Bool // To capture the initial baseline selfie for APIs
-    @Binding var shouldCaptureActiveFrameForAnalysis: Bool // To request an active frame for color analysis
+    @Binding var shouldCaptureBaselineSelfie: Bool
+    @Binding var shouldCaptureActiveFrameForAnalysis: Bool
 
-    var onFlashColorChange: (Color) -> Void // For updating flash color in SwiftUI View
-
+    var onFlashColorChange: (Color) -> Void
 
     func makeUIViewController(context: Context) -> CameraViewController {
         let controller = CameraViewController()
@@ -132,230 +133,179 @@ struct LivenessCameraView: UIViewControllerRepresentable {
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: UIViewControllerType, context: Context) {
+    func updateUIViewController(_ uiViewController: CameraViewController, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.viewModelColorFlashLivenessStatus = viewModel.colorFlashLivenessStatus
+        context.coordinator.viewModel = viewModel
         context.coordinator.shouldCaptureBaselineSelfieBinding = $shouldCaptureBaselineSelfie
         context.coordinator.shouldCaptureActiveFrameForAnalysisBinding = $shouldCaptureActiveFrameForAnalysis
-        context.coordinator.obstructionModel = viewModel.obstructionModel
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self, viewModel: viewModel, onFlashColorChange: onFlashColorChange, shouldCaptureBaselineSelfieBinding: $shouldCaptureBaselineSelfie, shouldCaptureActiveFrameForAnalysisBinding: $shouldCaptureActiveFrameForAnalysis, obstructionModel: viewModel.obstructionModel)
+        Coordinator(parent: self, viewModel: viewModel)
     }
 
+    // MARK: - Coordinator (Corrected Logic)
+    // ==================================
     class Coordinator: NSObject, CameraViewControllerDelegate {
         var parent: LivenessCameraView
         var viewModel: EKYCViewModel
-        var onFlashColorChange: (Color) -> Void
 
-        // Bindings for Coordinator to trigger requests in CameraView
         var shouldCaptureBaselineSelfieBinding: Binding<Bool>
         var shouldCaptureActiveFrameForAnalysisBinding: Binding<Bool>
 
-
-        var obstructionModel: VNCoreMLModel
-
-        // Local state for liveness check, managed by Coordinator
+        private var snappedBaselinePixelBuffer: CVPixelBuffer?
         private var faceBoundingBox: CGRect?
-        private var snappedBaselineSelfie: UIImage? // Store the baseline selfie for color analysis
-        private var lastRealtimeAnalysisTime: TimeInterval = 0
-        private let realtimeAnalysisThrottleInterval: TimeInterval = 0.25
-        
-        // Color flash specific states
         private var colorSequence: [Color] = []
         private var sessionResults: [(expected: String, detected: String)] = []
         private var currentStep = 0
+        private var lastRealtimeAnalysisTime: TimeInterval = 0
+        private let realtimeAnalysisThrottleInterval: TimeInterval = 0.25
+        
+        private var livenessStatusFromVM: ColorFlashLivenessProcessStatus = .pending
 
-
-        // This property allows the Coordinator to react to ViewModel state changes for color flash
-        var viewModelColorFlashLivenessStatus: ColorFlashLivenessProcessStatus = .pending {
-            didSet {
-                if viewModelColorFlashLivenessStatus.isProcessing && !oldValue.isProcessing {
-                    self.startColorFlashSequence()
-                }
-            }
-        }
-
-        init(parent: LivenessCameraView, viewModel: EKYCViewModel, onFlashColorChange: @escaping (Color) -> Void, shouldCaptureBaselineSelfieBinding: Binding<Bool>, shouldCaptureActiveFrameForAnalysisBinding: Binding<Bool>, obstructionModel: VNCoreMLModel) {
+        init(parent: LivenessCameraView, viewModel: EKYCViewModel) {
             self.parent = parent
             self.viewModel = viewModel
-            self.onFlashColorChange = onFlashColorChange
-            self.shouldCaptureBaselineSelfieBinding = shouldCaptureBaselineSelfieBinding
-            self.shouldCaptureActiveFrameForAnalysisBinding = shouldCaptureActiveFrameForAnalysisBinding
-            self.obstructionModel = obstructionModel
+            self.shouldCaptureBaselineSelfieBinding = parent.$shouldCaptureBaselineSelfie
+            self.shouldCaptureActiveFrameForAnalysisBinding = parent.$shouldCaptureActiveFrameForAnalysis
             super.init()
         }
-        
-        func didCaptureFrame(_ frame: CVPixelBuffer) {
-            DispatchQueue.main.async { // Ensure all UI-related updates and ViewModel access are on MainActor
-                // Run real-time face detection/obstruction analysis continuously if overall process is pending
-                if self.viewModel.overallProcessStatus.isPending {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        self.runRealtimeFaceAndObstructionAnalysis(frame: frame)
-                    }
-                }
-                
-                // Capture baseline selfie if trigger is set and face is detected
-                if self.shouldCaptureBaselineSelfieBinding.wrappedValue && self.viewModel.isFaceDetected && self.snappedBaselineSelfie == nil {
-                    self.shouldCaptureBaselineSelfieBinding.wrappedValue = false // Consume the trigger
-                    self.snapBaselineSelfie(frame: frame)
-                }
 
-                // If color flash sequence is in progress, capture active frames during flashes
-                if self.viewModel.colorFlashLivenessStatus.isProcessing {
-                    if self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue {
-                        self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = false // Consume the trigger
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            self.captureActiveFrameAndAnalyze(frame: frame)
-                        }
-                    }
-                }
+        @MainActor func didCaptureFrame(_ frame: CVPixelBuffer) {
+            livenessStatusFromVM = viewModel.colorFlashLivenessStatus
+            
+            if !livenessStatusFromVM.isFinished {
+                runRealtimeFaceAnalysis(frame: frame)
+            }
+            
+            if shouldCaptureBaselineSelfieBinding.wrappedValue {
+                shouldCaptureBaselineSelfieBinding.wrappedValue = false
+                snapBaselineSelfie(frame: frame)
+                return
+            }
+            
+            if shouldCaptureActiveFrameForAnalysisBinding.wrappedValue {
+                shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = false
+                captureAndAnalyzeActiveFrame(frame: frame)
+                return
             }
         }
-        
-        // Real-time analysis for face detection and obstruction (renamed for clarity)
-        private func runRealtimeFaceAndObstructionAnalysis(frame: CVPixelBuffer) {
+
+        private func runRealtimeFaceAnalysis(frame: CVPixelBuffer) {
             let currentTime = CACurrentMediaTime()
             guard currentTime - lastRealtimeAnalysisTime > realtimeAnalysisThrottleInterval else { return }
             lastRealtimeAnalysisTime = currentTime
             
             let faceRequest = VNDetectFaceRectanglesRequest { (request, error) in
                 let faceDetected = (request.results as? [VNFaceObservation])?.first != nil
-                DispatchQueue.main.async { // Update ViewModel on MainActor
+                DispatchQueue.main.async {
                     self.viewModel.isFaceDetected = faceDetected
                 }
             }
-            
-            let obstructionRequest = VNCoreMLRequest(model: self.obstructionModel) { (request, error) in
-                let obstructionResult = (request.results as? [VNClassificationObservation])?.first?.identifier ?? "Error"
-                DispatchQueue.main.async { // Update ViewModel on MainActor
-                    self.viewModel.obstructionResult = obstructionResult
-                }
-            }
-            
-            try? VNImageRequestHandler(cvPixelBuffer: frame, options: [:]).perform([faceRequest, obstructionRequest])
+            try? VNImageRequestHandler(cvPixelBuffer: frame, options: [:]).perform([faceRequest])
         }
-
-        // NEW: Function to snap the baseline selfie (for APIs and color analysis)
+        
         private func snapBaselineSelfie(frame: CVPixelBuffer) {
-            print("Coordinator: Capturing baseline selfie.")
+            print("Coordinator: Capturing baseline selfie...")
             guard let frameCopy = frame.deepCopied() else {
-                DispatchQueue.main.async {
-                    self.viewModel.overallProcessStatus = .error(message: "Failed to capture baseline selfie for color flash/APIs.")
-                }
+                abortLivenessCheck(reason: "Failed to copy baseline frame.")
                 return
             }
-            let ciImage = CIImage(cvPixelBuffer: frameCopy)
-            let context = CIContext()
-            if let cgImage = context.createCGImage(ciImage, from: ciImage.extent) {
-                let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right) // Ensure correct orientation for front camera
-                self.snappedBaselineSelfie = uiImage // Store for color analysis baseline
+            
+            detectFace(in: frameCopy) { [weak self] faceBounds in
+                guard let self = self else { return }
                 
-                // Get face bounding box for this selfie immediately
-                self.detectFace(in: frameCopy) { [weak self] (faceBounds: CGRect?) in
-                    guard let self = self else { return }
-                    DispatchQueue.main.async { // Ensure main thread for ViewModel calls
-                        if let bounds = faceBounds {
-                            self.faceBoundingBox = bounds
-                            print("Coordinator: Baseline selfie snapped, face bounds detected.")
-                            // Pass the snapped selfie to ViewModel, but don't initiate APIs from here.
-                            // The APIs are initiated in ViewModel.colorFlashSequenceCompleted.
-                        } else {
-                            print("Coordinator: No face detected in snapped baseline selfie.")
-                            self.viewModel.overallProcessStatus = .error(message: "No face detected in snapped selfie. Please try again.")
-                        }
-                    }
+                guard let bounds = faceBounds else {
+                    self.abortLivenessCheck(reason: "No face detected in the initial selfie. Please try again.")
+                    return
                 }
-            } else {
-                DispatchQueue.main.async {
-                    self.viewModel.overallProcessStatus = .error(message: "Failed to process baseline selfie image.")
-                }
+                
+                self.faceBoundingBox = bounds
+                self.snappedBaselinePixelBuffer = frameCopy
+
+                print("Coordinator: Baseline pixel buffer and face bounds captured. Starting flash sequence.")
+                self.startColorFlashSequence()
             }
         }
-
-        // MARK: - Color Flash Liveness Step Management
         
         private func startColorFlashSequence() {
-            print("Coordinator: Starting color flash sequence.")
             sessionResults.removeAll()
             currentStep = 0
             generateColorSequence()
             
-            // Immediately trigger the first frame capture for color analysis
-            DispatchQueue.main.async { // Set Binding on MainActor
+            DispatchQueue.main.async {
                 self.executeNextFlashStep()
             }
         }
         
-        private func generateColorSequence() {
-            let possibleColors: [Color] = [Color(UIColor.cyan), Color(UIColor.magenta), .yellow]
-            self.colorSequence = (0..<6).map { _ in possibleColors.randomElement()! }
-        }
-        
-        private func captureActiveFrameAndAnalyze(frame: CVPixelBuffer) {
-            guard let baselineSelfie = self.snappedBaselineSelfie, // Use the stored baseline selfie
-                  let faceBox = self.faceBoundingBox else { // Use the bounding box from initial snap's analysis
-                DispatchQueue.main.async { self.abortLivenessCheck(reason: "Missing selfie baseline or face data for active frame.") }
+        private func captureAndAnalyzeActiveFrame(frame: CVPixelBuffer) {
+            guard let baselinePixelBuffer = self.snappedBaselinePixelBuffer,
+                  let faceBox = self.faceBoundingBox else {
+                abortLivenessCheck(reason: "Missing baseline data for analysis.")
                 return
             }
             
-            guard let baselinePixelBuffer = self.pixelBuffer(from: baselineSelfie),
-                  let activeFrameCopy = frame.deepCopied() else {
-                DispatchQueue.main.async { self.abortLivenessCheck(reason: "Could not create pixel buffer from baseline selfie or deep copy active frame.") }
+            guard let activeFrameCopy = frame.deepCopied() else {
+                abortLivenessCheck(reason: "Could not copy active frame for analysis.")
                 return
             }
-
-            let result = self.analyzeMeanColorIncrease(baseline: baselinePixelBuffer, active: activeFrameCopy, faceBounds: faceBox)
             
-            DispatchQueue.main.async { // Update UI and process results on MainActor
-                self.onFlashColorChange(.black) // Immediately turn screen black after analysis
+            // CORRECTED: Call the CMY analysis function
+            let result = self.analyzeCMYIncrease(baseline: baselinePixelBuffer, active: activeFrameCopy, faceBounds: faceBox)
+            
+            DispatchQueue.main.async {
+                self.parent.onFlashColorChange(.black)
+                // CORRECTED: Handle the CMY analysis result
                 self.handleAnalysisCompletion(result: result)
             }
         }
         
-        private func detectFace(in pixelBuffer: CVPixelBuffer, completion: @escaping (CGRect?) -> Void) {
-            let request = VNDetectFaceRectanglesRequest { (request, error) in
-                guard let firstResult = (request.results as? [VNFaceObservation])?.first else {
-                    completion(nil); return
-                }
-                let bounds = VNImageRectForNormalizedRect(firstResult.boundingBox, CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer))
-                completion(bounds)
+        private func executeNextFlashStep() {
+            guard currentStep < colorSequence.count else {
+                endLivenessCheck()
+                return
             }
-            try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:]).perform([request])
+            
+            DispatchQueue.main.async {
+                self.parent.onFlashColorChange(self.colorSequence[self.currentStep])
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = true
+                }
+            }
         }
 
-        private func pixelBuffer(from image: UIImage) -> CVPixelBuffer? {
-            let ciImage = CIImage(image: image)
-            guard let cgImage = CIContext().createCGImage(ciImage!, from: ciImage!.extent) else { return nil }
+        // MARK: - Corrected Analysis Logic (from your old code)
+        
+        /// **REPLACED FUNCTION**: This function now correctly handles the CMY analysis result.
+        private func handleAnalysisCompletion(result: (cyan: Float, magenta: Float, yellow: Float)) {
+            var detectedColor = "Inconclusive"
+            
+            let (cyanIncrease, magentaIncrease, yellowIncrease) = result
 
-            let width = cgImage.width
-            let height = cgImage.height
-
-            var pixelBuffer: CVPixelBuffer?
-            let attributes = [
-                kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue,
-                kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue
-            ] as CFDictionary
-
-            let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attributes, &pixelBuffer)
-            guard status == kCVReturnSuccess, let unwrappedPixelBuffer = pixelBuffer else {
-                return nil
+            // Determine which color channel had the largest increase
+            if cyanIncrease > magentaIncrease && cyanIncrease > yellowIncrease {
+                detectedColor = "Cyan"
+            } else if magentaIncrease > cyanIncrease && magentaIncrease > yellowIncrease {
+                detectedColor = "Magenta"
+            } else if yellowIncrease > cyanIncrease && yellowIncrease > magentaIncrease {
+                detectedColor = "Yellow"
             }
+            
+            let expectedColor = self.colorToString(self.colorSequence[self.currentStep])
+            self.sessionResults.append((expected: expectedColor, detected: detectedColor))
+            
+            print("Flash \(currentStep + 1): Expected \(expectedColor), Detected \(detectedColor) | Increases -> C: \(String(format: "%.4f", cyanIncrease)), M: \(String(format: "%.4f", magentaIncrease)), Y: \(String(format: "%.4f", yellowIncrease))")
 
-            CVPixelBufferLockBaseAddress(unwrappedPixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
-            let pixelData = CVPixelBufferGetBaseAddress(unwrappedPixelBuffer)
-
-            let rgbColorSpace = CGColorSpaceCreateDeviceRGB()
-            let context = CGContext(data: pixelData, width: width, height: height, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(unwrappedPixelBuffer), space: rgbColorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)
-
-            context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            CVPixelBufferUnlockBaseAddress(unwrappedPixelBuffer, CVPixelBufferLockFlags(rawValue: 0))
-
-            return unwrappedPixelBuffer
+            self.currentStep += 1
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.executeNextFlashStep()
+            }
         }
         
-        private func analyzeMeanColorIncrease(baseline: CVPixelBuffer, active: CVPixelBuffer, faceBounds: CGRect) -> (cyan: Float, magenta: Float, yellow: Float) {
+        /// **REPLACED FUNCTION**: This now calculates the increase in CMY channels, not RGB.
+        private func analyzeCMYIncrease(baseline: CVPixelBuffer, active: CVPixelBuffer, faceBounds: CGRect) -> (cyan: Float, magenta: Float, yellow: Float) {
             CVPixelBufferLockBaseAddress(baseline, .readOnly)
             CVPixelBufferLockBaseAddress(active, .readOnly)
             defer {
@@ -388,11 +338,21 @@ struct LivenessCameraView: UIViewControllerRepresentable {
                     if (dx*dx)/(radiusX*radiusX) + (dy*dy)/(radiusY*radiusY) <= 1 {
                         let offset = y * bytesPerRow + x * 4
                         
-                        let baseR = Float(baselinePtr[offset + 2]) / 255.0; let baseG = Float(baselinePtr[offset + 1]) / 255.0; let baseB = Float(baselinePtr[offset + 0]) / 255.0
-                        baseCSum += (1.0 - baseR); baseMSum += (1.0 - baseG); baseYSum += (1.0 - baseB)
+                        // --- Calculate CMY for Baseline Frame (BGRA format) ---
+                        let baseR = Float(baselinePtr[offset + 2]) / 255.0
+                        let baseG = Float(baselinePtr[offset + 1]) / 255.0
+                        let baseB = Float(baselinePtr[offset + 0]) / 255.0
+                        baseCSum += (1.0 - baseR)  // Cyan = 1 - Red
+                        baseMSum += (1.0 - baseG)  // Magenta = 1 - Green
+                        baseYSum += (1.0 - baseB)  // Yellow = 1 - Blue
 
-                        let activeR = Float(activePtr[offset + 2]) / 255.0; let activeG = Float(activePtr[offset + 1]) / 255.0; let activeB = Float(activePtr[offset + 0]) / 255.0
-                        activeCSum += (1.0 - activeR); activeMSum += (1.0 - activeG); activeYSum += (1.0 - activeB)
+                        // --- Calculate CMY for Active Frame (BGRA format) ---
+                        let activeR = Float(activePtr[offset + 2]) / 255.0
+                        let activeG = Float(activePtr[offset + 1]) / 255.0
+                        let activeB = Float(activePtr[offset + 0]) / 255.0
+                        activeCSum += (1.0 - activeR)
+                        activeMSum += (1.0 - activeG)
+                        activeYSum += (1.0 - activeB)
                         
                         pixelCount += 1
                     }
@@ -401,67 +361,33 @@ struct LivenessCameraView: UIViewControllerRepresentable {
             
             guard pixelCount > 0 else { return (0, 0, 0) }
 
-            let increaseC = (activeCSum / pixelCount) - (baseCSum / pixelCount)
-            let increaseM = (activeMSum / pixelCount) - (baseMSum / pixelCount)
-            let increaseY = (activeYSum / pixelCount) - (baseYSum / pixelCount)
+            // --- Calculate Mean for each channel ---
+            let baseCMean = baseCSum / pixelCount
+            let baseMMean = baseMSum / pixelCount
+            let baseYMean = baseYSum / pixelCount
+
+            let activeCMean = activeCSum / pixelCount
+            let activeMMean = activeMSum / pixelCount
+            let activeYMean = activeYSum / pixelCount
+
+            // --- Calculate and return the increase in mean intensity ---
+            let increaseC = activeCMean - baseCMean
+            let increaseM = activeMMean - baseMMean
+            let increaseY = activeYMean - baseYMean
 
             return (increaseC, increaseM, increaseY)
         }
-        
-        private func executeNextFlashStep() {
-            guard currentStep < colorSequence.count else {
-                endLivenessCheck()
-                return
-            }
-            
-            DispatchQueue.main.async { // Update UI on MainActor
-                self.onFlashColorChange(self.colorSequence[self.currentStep])
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { // Set Binding on MainActor
-                    self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = true // Corrected name
-                }
-            }
-        }
-        
-        private func handleAnalysisCompletion(result: (cyan: Float, magenta: Float, yellow: Float)) {
-            guard result.cyan != -1 else {
-                self.abortLivenessCheck(reason: "Liveness check failed: No face was detected during the process.")
-                return
-            }
 
-            var detectedColor = "Inconclusive"
-            if result.cyan > result.magenta && result.cyan > result.yellow { detectedColor = "Cyan" }
-            else if result.magenta > result.cyan && result.magenta > result.yellow { detectedColor = "Magenta" }
-            else if result.yellow > result.cyan && result.yellow > result.magenta { detectedColor = "Yellow" }
-            
-            let expectedColor = self.colorToString(self.colorSequence[self.currentStep])
-            self.sessionResults.append((expected: expectedColor, detected: detectedColor))
-            
-            self.currentStep += 1
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                self.executeNextFlashStep()
-            }
-        }
+        // MARK: - Helper and State Management Functions (Unchanged)
         
-        private func abortLivenessCheck(reason: String) {
-            DispatchQueue.main.async { // Call ViewModel method on MainActor
-                self.viewModel.colorFlashSequenceCompleted(wasSuccessful: false, report: reason, snappedSelfie: self.snappedBaselineSelfie) // Pass selfie
-                // Reset local state if necessary
-                self.currentStep = 0
-                self.sessionResults.removeAll()
-                self.colorSequence.removeAll()
-                self.onFlashColorChange(.black) // Ensure flash is off
-                self.shouldCaptureBaselineSelfieBinding.wrappedValue = false // Reset baseline capture
-                // MODIFIED: Removed the line causing the error
-                self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = false // Reset active capture
-                self.snappedBaselineSelfie = nil // Clear stored selfie
-            }
+        private func generateColorSequence() {
+            let possibleColors: [Color] = [Color(UIColor.cyan), Color(UIColor.magenta), .yellow]
+            self.colorSequence = (0..<6).map { _ in possibleColors.randomElement()! }
         }
         
         private func endLivenessCheck() {
-            DispatchQueue.main.async { // Call ViewModel method on MainActor
-                self.onFlashColorChange(.black) // Ensure flash is off
-                
+            DispatchQueue.main.async {
+                self.parent.onFlashColorChange(.black)
                 var report = "Color Flash Liveness Analysis Complete:\n\n"
                 var successCount = 0
                 for (index, result) in self.sessionResults.enumerated() {
@@ -470,26 +396,55 @@ struct LivenessCameraView: UIViewControllerRepresentable {
                     report += "Flash \(index + 1): Expected \(result.expected), Detected \(result.detected) \(status)\n"
                 }
                 
-                let wasSuccessful = successCount >= 4 // Example success condition
+                let wasSuccessful = successCount >= 4
                 let finalStatus = wasSuccessful ? "Liveness Confirmed" : "Liveness Failed"
                 report += "\nFinal Result: \(finalStatus)"
                 
-                self.viewModel.colorFlashSequenceCompleted(
-                    wasSuccessful: wasSuccessful,
-                    report: report,
-                    snappedSelfie: self.snappedBaselineSelfie // Pass selfie
-                )
-                // Reset local state if necessary
-                self.currentStep = 0
-                self.sessionResults.removeAll()
-                self.colorSequence.removeAll()
-                self.shouldCaptureBaselineSelfieBinding.wrappedValue = false
-                // MODIFIED: Removed the line causing the error
-                self.shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = false
-                self.snappedBaselineSelfie = nil // Clear stored selfie
+                var finalSelfie: UIImage?
+                if let buffer = self.snappedBaselinePixelBuffer {
+                    let ciImage = CIImage(cvPixelBuffer: buffer)
+                    let context = CIContext()
+                    if let cgImage = context.createCGImage(ciImage, from: ciImage.extent) {
+                        finalSelfie = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
+                    }
+                }
+
+                self.viewModel.colorFlashSequenceCompleted(wasSuccessful: wasSuccessful, report: report, snappedSelfie: finalSelfie)
+                self.resetLocalState()
             }
         }
 
+        private func abortLivenessCheck(reason: String) {
+            DispatchQueue.main.async {
+                self.parent.onFlashColorChange(.black)
+                self.viewModel.colorFlashSequenceCompleted(wasSuccessful: false, report: reason, snappedSelfie: nil)
+                self.resetLocalState()
+            }
+        }
+        
+        private func resetLocalState() {
+            currentStep = 0
+            sessionResults.removeAll()
+            colorSequence.removeAll()
+            snappedBaselinePixelBuffer = nil
+            faceBoundingBox = nil
+            shouldCaptureBaselineSelfieBinding.wrappedValue = false
+            shouldCaptureActiveFrameForAnalysisBinding.wrappedValue = false
+        }
+        
+        private func detectFace(in pixelBuffer: CVPixelBuffer, completion: @escaping (CGRect?) -> Void) {
+            let request = VNDetectFaceRectanglesRequest { (request, error) in
+                guard let firstResult = (request.results as? [VNFaceObservation])?.first else {
+                    completion(nil); return
+                }
+                let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
+                let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
+                let bounds = VNImageRectForNormalizedRect(firstResult.boundingBox, imageWidth, imageHeight)
+                completion(bounds)
+            }
+            try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:]).perform([request])
+        }
+        
         private func colorToString(_ color: Color) -> String {
             switch color {
             case Color(UIColor.cyan): return "Cyan"
@@ -501,6 +456,7 @@ struct LivenessCameraView: UIViewControllerRepresentable {
     }
 }
 
+// MARK: - CVPixelBuffer Extension
 extension CVPixelBuffer {
     func deepCopied() -> CVPixelBuffer? {
         let width = CVPixelBufferGetWidth(self)

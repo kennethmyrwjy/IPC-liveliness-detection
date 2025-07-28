@@ -1,9 +1,4 @@
-//
-//  LivenessCheckView.swift
-//  IPC_LIVE_DETECTION
-//
-//  Created by Jordan on 25/07/25.
-//
+// Di file LivenessCheckView.swift
 
 import SwiftUI
 import AVFoundation
@@ -13,13 +8,13 @@ import QuartzCore
 struct LivenessCheckView: View {
     @EnvironmentObject var viewModel: EKYCViewModel
     
-    @State private var flashColor: Color = .black
-    @State private var originalBrightness: CGFloat = UIScreen.main.brightness
-    
-    // Bindings to trigger actions in LivenessCameraView.Coordinator
-    @State private var shouldCaptureBaselineSelfie: Bool = false // To capture the initial baseline selfie for APIs
-    @State private var shouldCaptureActiveFrameForAnalysis: Bool = false // To request an active frame for color analysis
+    // State untuk mengontrol kamera
+    @State private var shouldCaptureBaselineSelfie: Bool = false
+    @State private var shouldCaptureActiveFrameForAnalysis: Bool = false
 
+    // State untuk mengontrol UI
+    @State private var flashColor: Color = .black
+    @State private var originalBrightness: CGFloat = UIScreen.main.brightness // Simpan kecerahan awal
 
     var body: some View {
         ZStack {
@@ -43,11 +38,9 @@ struct LivenessCheckView: View {
                     onFlashColorChange: { newColor in
                         self.flashColor = newColor
                     }
-                    // onSelfieSnapped is handled by ViewModel passing selfie to colorFlashSequenceCompleted
                 )
                 .frame(width: 300, height: 300)
                 .clipShape(Circle())
-                // Overlay shows color flash status now
                 .overlay(Circle().stroke(viewModel.colorFlashLivenessStatus.isProcessing ? Color.yellow : Color.white, lineWidth: 4))
 
                 // Instruction Text
@@ -64,28 +57,15 @@ struct LivenessCheckView: View {
                 }
                 .frame(minHeight: 60)
 
-                // --- WARNING/ERROR VIEW ---
-                if viewModel.isFaceDetected && viewModel.obstructionResult != "plain" {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.yellow)
-                        Text("Warning: Obstruction detected. Verification may fail.")
-                            .font(.footnote)
-                            .foregroundColor(.white)
-                    }
-                    .padding(8)
-                    .background(Color.yellow.opacity(0.3))
-                    .cornerRadius(8)
-                    .transition(.opacity.animation(.easeInOut))
-                }
-                else {
-                    Spacer().frame(height: 38)
-                }
-                
+                // Tombol Aksi
                 Button(action: {
-                    // MODIFIED: Capture baseline selfie, and set ViewModel status for color flash
-                    self.shouldCaptureBaselineSelfie = true // Trigger baseline selfie capture in Coordinator
-                    self.viewModel.colorFlashLivenessStatus = .inProgress // Set ViewModel status for color flash
+                    // LOGIKA KECERAHAN DITAMBAHKAN DI SINI
+                    self.originalBrightness = UIScreen.main.brightness // 1. Simpan kecerahan saat ini
+                    UIScreen.main.brightness = 1.0 // 2. Atur kecerahan ke maksimal
+
+                    // 3. Mulai proses seperti biasa
+                    self.shouldCaptureBaselineSelfie = true
+                    self.viewModel.colorFlashLivenessStatus = .inProgress
                 }) {
                     Text(buttonTextForLiveness())
                         .font(.title2).fontWeight(.bold).foregroundColor(.white).padding()
@@ -93,7 +73,6 @@ struct LivenessCheckView: View {
                         .background(buttonBackgroundColorForLiveness())
                         .cornerRadius(15).shadow(radius: 5)
                 }
-                // Button enabled if face is detected and color flash is pending
                 .disabled(!viewModel.isReadyForLivenessCheck || viewModel.colorFlashLivenessStatus.isProcessing || viewModel.overallProcessStatus.isFinished)
 
                 Spacer()
@@ -102,19 +81,13 @@ struct LivenessCheckView: View {
         }
         .background(Color.black.edgesIgnoringSafeArea(.all))
         .navigationBarBackButtonHidden(viewModel.overallProcessStatus.isProcessing || viewModel.colorFlashLivenessStatus.isProcessing)
-        .onAppear {
-            originalBrightness = UIScreen.main.brightness
-            DispatchQueue.main.async { // Wrap state resets
-                viewModel.isFaceDetected = false
-                viewModel.obstructionResult = "Initializing..."
-            }
-        }
         .onDisappear {
-            UIScreen.main.brightness = originalBrightness
+            // KEMBALIKAN KECERAHAN SAAT KELUAR DARI SCREEN INI
+            UIScreen.main.brightness = self.originalBrightness
         }
     }
     
-    // Helper to determine button text
+    // Helper untuk teks tombol
     private func buttonTextForLiveness() -> String {
         if viewModel.colorFlashLivenessStatus.isProcessing {
             return "Performing Color Flash..."
@@ -125,7 +98,7 @@ struct LivenessCheckView: View {
         }
     }
 
-    // Helper to determine button background color
+    // Helper untuk warna background tombol
     private func buttonBackgroundColorForLiveness() -> Color {
         if viewModel.colorFlashLivenessStatus.isProcessing {
             return .gray
